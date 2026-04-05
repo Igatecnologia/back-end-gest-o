@@ -9,7 +9,47 @@ Backend do sistema IGA. Proxy seguro para API SGBR BI, autenticacao local, CRUD 
 - Senhas com scrypt (zero dependencias externas)
 - Proxy SGBR com auto-login e cache de token
 
-## Instalacao
+## Como rodar o sistema completo (backend + frontend)
+
+O IGA tem dois repositorios. Voce precisa rodar os dois para o sistema funcionar.
+
+### Passo 1 — Clonar os repositorios
+
+```bash
+mkdir iga-gestao && cd iga-gestao
+git clone https://github.com/Igatecnologia/back-end-gest-o.git
+git clone https://github.com/Igatecnologia/front-end-gest-o.git
+```
+
+### Passo 2 — Iniciar o backend (este repositorio)
+
+```bash
+cd back-end-gest-o
+npm install
+npm run dev
+```
+
+Deve aparecer: `[IGA Backend] http://localhost:3000`
+
+**Deixe este terminal aberto.**
+
+### Passo 3 — Iniciar o frontend (outro terminal)
+
+```bash
+cd front-end-gest-o
+npm install
+npm run dev
+```
+
+### Passo 4 — Acessar
+
+Abra **http://localhost:5173** e faca login com `admin@iga.com` / `admin123`.
+
+Guia completo de configuracao da fonte de dados SGBR: veja o README do frontend.
+
+---
+
+## Instalacao somente do backend
 
 ```bash
 npm install
