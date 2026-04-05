@@ -43,7 +43,7 @@ npm run dev
 
 ### Passo 4 — Acessar
 
-Abra **http://localhost:5173** e faca login com as credenciais fornecidas pelo administrador.
+Abra **http://localhost:5173** e faca login com `admin@iga.com` / `admin123`.
 
 Guia completo de configuracao da fonte de dados SGBR: veja o README do frontend.
 
@@ -58,9 +58,13 @@ npm run dev
 
 Servidor inicia em `http://localhost:3000`. Na primeira execucao cria o admin automaticamente.
 
-## Credenciais
+## Credenciais do sistema
 
-Credenciais de acesso sao criadas automaticamente na primeira execucao e fornecidas pelo administrador.
+| Email | Senha | Perfil |
+|-------|-------|--------|
+| admin@iga.com | admin123 | Administrador |
+
+Criado automaticamente na primeira execucao. As credenciais de APIs externas sao configuradas pela tela de Fontes de Dados.
 
 ## Variaveis de ambiente
 
