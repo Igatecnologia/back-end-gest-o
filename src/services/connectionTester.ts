@@ -6,13 +6,59 @@ type TestResult = {
   latencyMs: number
   message: string
   sampleFields?: string[]
+  /** Primeiros registros (até 3) para preview */
+  sampleRows?: Record<string, unknown>[]
+  /** Tipos inferidos dos campos */
+  fieldTypes?: Record<string, string>
+  /** Total de registros retornados */
+  totalRows?: number
+}
+
+/**
+ * Infere o tipo de um valor para exibir no diagnóstico.
+ */
+function inferFieldType(value: unknown): string {
+  if (value === null || value === undefined) return 'null'
+  if (typeof value === 'number') return Number.isInteger(value) ? 'integer' : 'decimal'
+  if (typeof value === 'boolean') return 'boolean'
+  if (typeof value === 'string') {
+    if (/^\d{4}[-./]\d{2}[-./]\d{2}/.test(value)) return 'date'
+    if (/^\d+$/.test(value)) return 'numeric_string'
+    if (/^\d+[.,]\d+$/.test(value)) return 'decimal_string'
+    return 'string'
+  }
+  if (Array.isArray(value)) return 'array'
+  if (typeof value === 'object') return 'object'
+  return typeof value
+}
+
+/**
+ * Extrai o array de dados de uma resposta de API, independente do formato.
+ * Suporta: array direto, { items: [...] }, { data: [...] }, { rows: [...] },
+ *          { results: [...] }, { records: [...] }, { content: [...] }
+ */
+function extractDataArray(data: unknown): unknown[] {
+  if (Array.isArray(data)) return data
+  if (data && typeof data === 'object') {
+    const obj = data as Record<string, unknown>
+    // Tenta campos comuns de paginação/envelope
+    for (const key of ['items', 'data', 'rows', 'results', 'records', 'content', 'list', 'entries', 'valores', 'registros']) {
+      if (Array.isArray(obj[key])) return obj[key] as unknown[]
+    }
+    // Se o objeto tem só uma chave e ela é um array, usa ela
+    const keys = Object.keys(obj)
+    if (keys.length === 1 && Array.isArray(obj[keys[0]])) {
+      return obj[keys[0]] as unknown[]
+    }
+  }
+  return []
 }
 
 /**
  * Testa conexao com a API do cliente.
  * 1. Se tem loginEndpoint — faz login primeiro para pegar token
  * 2. Se tem dataEndpoint — busca dados reais com o token
- * 3. Retorna campos encontrados no primeiro registro
+ * 3. Analisa automaticamente os dados recebidos
  */
 export async function testConnection(ds: DataSource): Promise<TestResult> {
   const start = performance.now()
@@ -32,15 +78,25 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
       const fieldPass = ds.loginFieldPassword ?? 'senha'
       const passwordMode = ds.passwordMode ?? 'plain'
 
-      // Credenciais no formato "usuario:senha" ou so "usuario" (senha vazia)
-      const creds = (ds.authCredentials ?? '').split(':')
-      const testUser = creds[0] || 'test'
-      const testPass = await hashPassword(creds[1] || '', passwordMode)
+      const apiLogin = (ds as DataSource & { apiLogin?: string }).apiLogin
+      const apiPassword = (ds as DataSource & { apiPassword?: string }).apiPassword
+      const rawCredentials = ds.authCredentials ?? (apiLogin ? `${apiLogin}:${apiPassword ?? ''}` : '')
+      // Separa usuario:senha — a senha pode conter ":", então só split no primeiro
+      const colonIdx = rawCredentials.indexOf(':')
+      const testUser = colonIdx >= 0 ? rawCredentials.slice(0, colonIdx) : rawCredentials || 'test'
+      const testPass = await hashPassword(colonIdx >= 0 ? rawCredentials.slice(colonIdx + 1) : '', passwordMode)
 
       const loginBody: Record<string, string> = {
         [fieldUser]: testUser,
         [fieldPass]: testPass,
       }
+
+      console.log('[connectionTester] Login attempt:', {
+        url: loginUrl,
+        body: { [fieldUser]: testUser, [fieldPass]: '***' + testPass.slice(-6) },
+        passwordMode,
+        rawCredsLength: rawCredentials.length,
+      })
 
       const loginRes = await fetch(loginUrl, {
         method: 'POST',
@@ -51,6 +107,8 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
 
       if (!loginRes.ok) {
         const latencyMs = Math.round(performance.now() - start)
+        const errorBody = await loginRes.text().catch(() => '')
+        console.log('[connectionTester] Login failed:', { status: loginRes.status, body: errorBody.slice(0, 200) })
         return {
           success: false,
           latencyMs,
@@ -60,8 +118,25 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
         }
       }
 
-      const loginData = await loginRes.json()
-      token = loginData.token ?? loginData.access_token ?? loginData.jwt ?? null
+      const loginData = await loginRes.json() as Record<string, unknown>
+      token = (loginData.token ?? loginData.access_token ?? loginData.jwt ?? loginData.bearer ?? null) as string | null
+
+      // Se não achou token nos campos conhecidos, procura qualquer campo que pareça token
+      if (!token) {
+        for (const [key, val] of Object.entries(loginData)) {
+          if (typeof val === 'string' && val.length >= 20 && /^[A-Za-z0-9._\-]+$/.test(val)) {
+            token = val
+            console.log(`[connectionTester] Token encontrado no campo "${key}"`)
+            break
+          }
+        }
+      }
+
+      console.log('[connectionTester] Login OK:', {
+        tokenFound: !!token,
+        tokenLength: token?.length ?? 0,
+        responseKeys: Object.keys(loginData),
+      })
     } catch (err) {
       const latencyMs = Math.round(performance.now() - start)
       return {
@@ -75,22 +150,40 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
   // ── Passo 2: Buscar dados ──
   if (ds.dataEndpoint) {
     try {
-      // Monta URL buscando todos os registros (periodo amplo)
-      const fmt = (d: Date) =>
-        `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`
-      const now = new Date()
-      const inicio = new Date('2020-01-01')
+      let dataUrl = `${baseUrl}${ds.dataEndpoint}`
 
-      const sep = ds.dataEndpoint.includes('?') ? '&' : '?'
-      const dataUrl = `${baseUrl}${ds.dataEndpoint}${sep}dt_de=${fmt(inicio)}&dt_ate=${fmt(now)}`
+      // Adiciona parâmetros de data se o endpoint não já contém query params manuais
+      // Suporta múltiplos formatos de data para diferentes APIs
+      if (!ds.dataEndpoint.includes('dt_de') && !ds.dataEndpoint.includes('start') && !ds.dataEndpoint.includes('desde')) {
+        const now = new Date()
+        const inicio = new Date('2020-01-01')
+
+        const fmtDot = (d: Date) =>
+          `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`
+        const fmtDash = (d: Date) =>
+          `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+        const sep = ds.dataEndpoint.includes('?') ? '&' : '?'
+
+        // Detecta formato de data pela API — tenta SGBR (ponto) primeiro, depois ISO (traço)
+        if (ds.type === 'sgbr_bi') {
+          dataUrl = `${dataUrl}${sep}dt_de=${fmtDot(inicio)}&dt_ate=${fmtDot(now)}`
+        } else {
+          // Para APIs genéricas, envia nos dois formatos mais comuns
+          dataUrl = `${dataUrl}${sep}dt_de=${fmtDot(inicio)}&dt_ate=${fmtDot(now)}&start_date=${fmtDash(inicio)}&end_date=${fmtDash(now)}`
+        }
+      }
 
       const headers: Record<string, string> = { Accept: 'application/json' }
-      if (token) headers.Authorization = `Bearer ${token}`
-      if (ds.authMethod === 'bearer_token' && ds.authCredentials && !token) {
+      // Token do login tem prioridade — não sobrescrever com auth estática
+      if (token) {
+        headers.Authorization = `Bearer ${token}`
+      } else if (ds.authMethod === 'bearer_token' && ds.authCredentials) {
         headers.Authorization = `Bearer ${ds.authCredentials}`
-      }
-      if (ds.authMethod === 'api_key' && ds.authCredentials) {
+      } else if (ds.authMethod === 'api_key' && ds.authCredentials) {
         headers['X-API-Key'] = ds.authCredentials
+      } else if (ds.authMethod === 'basic_auth' && ds.authCredentials) {
+        headers.Authorization = `Basic ${Buffer.from(ds.authCredentials).toString('base64')}`
       }
 
       const dataRes = await fetch(dataUrl, {
@@ -111,8 +204,8 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
         }
       }
 
-      const data = await dataRes.json()
-      const arr = Array.isArray(data) ? data : data?.items ?? data?.data ?? data?.rows ?? []
+      const rawData = await dataRes.json()
+      const arr = extractDataArray(rawData)
 
       if (arr.length === 0) {
         return {
@@ -120,15 +213,40 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
           latencyMs,
           message: `Conectado (${latencyMs}ms) mas sem dados no periodo`,
           sampleFields: [],
+          totalRows: 0,
         }
       }
 
-      const sampleFields = Object.keys(arr[0])
+      // Analisa primeiro registro para tipos
+      const firstRow = arr[0] as Record<string, unknown>
+      const sampleFields = Object.keys(firstRow)
+      const fieldTypes: Record<string, string> = {}
+      for (const [key, value] of Object.entries(firstRow)) {
+        fieldTypes[key] = inferFieldType(value)
+      }
+
+      // Preview: até 3 registros (sanitiza valores grandes)
+      const sampleRows = arr.slice(0, 3).map((row) => {
+        const r = row as Record<string, unknown>
+        const sanitized: Record<string, unknown> = {}
+        for (const [key, value] of Object.entries(r)) {
+          if (typeof value === 'string' && value.length > 80) {
+            sanitized[key] = value.slice(0, 80) + '...'
+          } else {
+            sanitized[key] = value
+          }
+        }
+        return sanitized
+      })
+
       return {
         success: true,
         latencyMs,
         message: `${arr.length} registro${arr.length !== 1 ? 's' : ''} encontrado${arr.length !== 1 ? 's' : ''} (${latencyMs}ms)`,
         sampleFields,
+        sampleRows,
+        fieldTypes,
+        totalRows: arr.length,
       }
     } catch (err) {
       const latencyMs = Math.round(performance.now() - start)

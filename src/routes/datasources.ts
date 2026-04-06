@@ -18,7 +18,32 @@ const VALID_FIELD_NAMES = new Set([
   'senha', 'password', 'pass', 'pwd', 'secret', 'key',
 ])
 
-function sanitize(body: Record<string, unknown>) {
+type DataSourceBody = Partial<DataSource> & {
+  apiLogin?: string
+  apiPassword?: string
+}
+
+function toOptionalString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value.trim() : undefined
+}
+
+/**
+ * Aceita credenciais em dois formatos:
+ * - authCredentials: "login:senha"
+ * - apiLogin + apiPassword (campos separados do frontend)
+ */
+function resolveAuthCredentials(body: DataSourceBody): string | undefined {
+  const authCredentials = toOptionalString(body.authCredentials)
+  if (authCredentials !== undefined) return authCredentials
+
+  const apiLogin = toOptionalString(body.apiLogin)
+  const apiPassword = toOptionalString(body.apiPassword) ?? ''
+
+  if (apiLogin === undefined) return undefined
+  return `${apiLogin}:${apiPassword}`
+}
+
+function sanitize(body: DataSourceBody) {
   // apiUrl: extrair só a origin (scheme + host + port)
   if (typeof body.apiUrl === 'string') {
     try {
@@ -28,7 +53,8 @@ function sanitize(body: Record<string, unknown>) {
   }
 
   // endpoints: se vier URL completa, extrair path
-  for (const key of ['loginEndpoint', 'dataEndpoint']) {
+  const endpointKeys: Array<'loginEndpoint' | 'dataEndpoint'> = ['loginEndpoint', 'dataEndpoint']
+  for (const key of endpointKeys) {
     const val = body[key]
     if (typeof val === 'string' && val.startsWith('http')) {
       try { body[key] = new URL(val).pathname } catch { /* manter */ }
@@ -52,7 +78,13 @@ dataSourceRouter.get('/', (_req, res) => {
 
 // POST /test — testa config ANTES de salvar (DEVE vir antes de /:id)
 dataSourceRouter.post('/test', async (req, res) => {
-  const result = await testConnection(req.body as DataSource)
+  const body = req.body as DataSourceBody
+  const dsForTest = {
+    ...body,
+    authCredentials: resolveAuthCredentials(body),
+  } as DataSource
+
+  const result = await testConnection(dsForTest)
   res.json(result)
 })
 
@@ -65,8 +97,11 @@ dataSourceRouter.get('/:id', (req, res) => {
 
 // POST / — cria
 dataSourceRouter.post('/', (req, res) => {
-  const body = req.body
+  const body = req.body as DataSourceBody
   sanitize(body)
+  if (!body.name || !body.apiUrl) {
+    return res.status(400).json({ message: 'Nome e URL da API sao obrigatorios' })
+  }
   let all = readAll()
   if (body.isAuthSource) all = all.map((ds) => ({ ...ds, isAuthSource: false }))
 
@@ -78,7 +113,7 @@ dataSourceRouter.post('/', (req, res) => {
     type: body.type ?? 'rest_api',
     apiUrl: body.apiUrl,
     authMethod: body.authMethod ?? 'none',
-    authCredentials: body.authCredentials,
+    authCredentials: resolveAuthCredentials(body),
     status: 'pending',
     lastCheckedAt: null,
     lastError: null,
@@ -103,9 +138,10 @@ dataSourceRouter.put('/:id', (req, res) => {
   const idx = all.findIndex((d) => d.id === req.params.id)
   if (idx < 0) return res.status(404).json({ message: 'Nao encontrada' })
 
-  const body = req.body
+  const body = req.body as DataSourceBody
   sanitize(body)
   if (body.isAuthSource) all = all.map((ds, i) => i === idx ? ds : { ...ds, isAuthSource: false })
+  const nextAuthCredentials = resolveAuthCredentials(body)
 
   all[idx] = {
     ...all[idx],
@@ -113,7 +149,7 @@ dataSourceRouter.put('/:id', (req, res) => {
     ...(body.type != null && { type: body.type }),
     ...(body.apiUrl != null && { apiUrl: body.apiUrl }),
     ...(body.authMethod != null && { authMethod: body.authMethod }),
-    ...(body.authCredentials && { authCredentials: body.authCredentials }),
+    ...(nextAuthCredentials !== undefined && { authCredentials: nextAuthCredentials }),
     ...(body.fieldMappings != null && { fieldMappings: body.fieldMappings }),
     ...(body.erpEndpoints != null && { erpEndpoints: body.erpEndpoints }),
     ...(body.isAuthSource != null && { isAuthSource: body.isAuthSource }),
