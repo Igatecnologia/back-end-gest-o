@@ -1,22 +1,17 @@
 import type { DataSource } from '../storage.js'
 import { hashPassword } from './passwordHasher.js'
+import { extractDataArray } from '../utils/extractDataArray.js'
 
 type TestResult = {
   success: boolean
   latencyMs: number
   message: string
   sampleFields?: string[]
-  /** Primeiros registros (até 3) para preview */
   sampleRows?: Record<string, unknown>[]
-  /** Tipos inferidos dos campos */
   fieldTypes?: Record<string, string>
-  /** Total de registros retornados */
   totalRows?: number
 }
 
-/**
- * Infere o tipo de um valor para exibir no diagnóstico.
- */
 function inferFieldType(value: unknown): string {
   if (value === null || value === undefined) return 'null'
   if (typeof value === 'number') return Number.isInteger(value) ? 'integer' : 'decimal'
@@ -33,32 +28,7 @@ function inferFieldType(value: unknown): string {
 }
 
 /**
- * Extrai o array de dados de uma resposta de API, independente do formato.
- * Suporta: array direto, { items: [...] }, { data: [...] }, { rows: [...] },
- *          { results: [...] }, { records: [...] }, { content: [...] }
- */
-function extractDataArray(data: unknown): unknown[] {
-  if (Array.isArray(data)) return data
-  if (data && typeof data === 'object') {
-    const obj = data as Record<string, unknown>
-    // Tenta campos comuns de paginação/envelope
-    for (const key of ['items', 'data', 'rows', 'results', 'records', 'content', 'list', 'entries', 'valores', 'registros']) {
-      if (Array.isArray(obj[key])) return obj[key] as unknown[]
-    }
-    // Se o objeto tem só uma chave e ela é um array, usa ela
-    const keys = Object.keys(obj)
-    if (keys.length === 1 && Array.isArray(obj[keys[0]])) {
-      return obj[keys[0]] as unknown[]
-    }
-  }
-  return []
-}
-
-/**
  * Testa conexao com a API do cliente.
- * 1. Se tem loginEndpoint — faz login primeiro para pegar token
- * 2. Se tem dataEndpoint — busca dados reais com o token
- * 3. Analisa automaticamente os dados recebidos
  */
 export async function testConnection(ds: DataSource): Promise<TestResult> {
   const start = performance.now()
@@ -81,7 +51,6 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
       const apiLogin = (ds as DataSource & { apiLogin?: string }).apiLogin
       const apiPassword = (ds as DataSource & { apiPassword?: string }).apiPassword
       const rawCredentials = ds.authCredentials ?? (apiLogin ? `${apiLogin}:${apiPassword ?? ''}` : '')
-      // Separa usuario:senha — a senha pode conter ":", então só split no primeiro
       const colonIdx = rawCredentials.indexOf(':')
       const testUser = colonIdx >= 0 ? rawCredentials.slice(0, colonIdx) : rawCredentials || 'test'
       const testPass = await hashPassword(colonIdx >= 0 ? rawCredentials.slice(colonIdx + 1) : '', passwordMode)
@@ -90,13 +59,6 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
         [fieldUser]: testUser,
         [fieldPass]: testPass,
       }
-
-      console.log('[connectionTester] Login attempt:', {
-        url: loginUrl,
-        body: { [fieldUser]: testUser, [fieldPass]: '***' + testPass.slice(-6) },
-        passwordMode,
-        rawCredsLength: rawCredentials.length,
-      })
 
       const loginRes = await fetch(loginUrl, {
         method: 'POST',
@@ -107,8 +69,6 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
 
       if (!loginRes.ok) {
         const latencyMs = Math.round(performance.now() - start)
-        const errorBody = await loginRes.text().catch(() => '')
-        console.log('[connectionTester] Login failed:', { status: loginRes.status, body: errorBody.slice(0, 200) })
         return {
           success: false,
           latencyMs,
@@ -121,22 +81,14 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
       const loginData = await loginRes.json() as Record<string, unknown>
       token = (loginData.token ?? loginData.access_token ?? loginData.jwt ?? loginData.bearer ?? null) as string | null
 
-      // Se não achou token nos campos conhecidos, procura qualquer campo que pareça token
       if (!token) {
-        for (const [key, val] of Object.entries(loginData)) {
+        for (const [, val] of Object.entries(loginData)) {
           if (typeof val === 'string' && val.length >= 20 && /^[A-Za-z0-9._\-]+$/.test(val)) {
             token = val
-            console.log(`[connectionTester] Token encontrado no campo "${key}"`)
             break
           }
         }
       }
-
-      console.log('[connectionTester] Login OK:', {
-        tokenFound: !!token,
-        tokenLength: token?.length ?? 0,
-        responseKeys: Object.keys(loginData),
-      })
     } catch (err) {
       const latencyMs = Math.round(performance.now() - start)
       return {
@@ -152,8 +104,6 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
     try {
       let dataUrl = `${baseUrl}${ds.dataEndpoint}`
 
-      // Adiciona parâmetros de data se o endpoint não já contém query params manuais
-      // Suporta múltiplos formatos de data para diferentes APIs
       if (!ds.dataEndpoint.includes('dt_de') && !ds.dataEndpoint.includes('start') && !ds.dataEndpoint.includes('desde')) {
         const now = new Date()
         const inicio = new Date('2020-01-01')
@@ -165,17 +115,14 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
 
         const sep = ds.dataEndpoint.includes('?') ? '&' : '?'
 
-        // Detecta formato de data pela API — tenta SGBR (ponto) primeiro, depois ISO (traço)
         if (ds.type === 'sgbr_bi') {
           dataUrl = `${dataUrl}${sep}dt_de=${fmtDot(inicio)}&dt_ate=${fmtDot(now)}`
         } else {
-          // Para APIs genéricas, envia nos dois formatos mais comuns
           dataUrl = `${dataUrl}${sep}dt_de=${fmtDot(inicio)}&dt_ate=${fmtDot(now)}&start_date=${fmtDash(inicio)}&end_date=${fmtDash(now)}`
         }
       }
 
       const headers: Record<string, string> = { Accept: 'application/json' }
-      // Token do login tem prioridade — não sobrescrever com auth estática
       if (token) {
         headers.Authorization = `Bearer ${token}`
       } else if (ds.authMethod === 'bearer_token' && ds.authCredentials) {
@@ -217,7 +164,6 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
         }
       }
 
-      // Analisa primeiro registro para tipos
       const firstRow = arr[0] as Record<string, unknown>
       const sampleFields = Object.keys(firstRow)
       const fieldTypes: Record<string, string> = {}
@@ -225,7 +171,6 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
         fieldTypes[key] = inferFieldType(value)
       }
 
-      // Preview: até 3 registros (sanitiza valores grandes)
       const sampleRows = arr.slice(0, 3).map((row) => {
         const r = row as Record<string, unknown>
         const sanitized: Record<string, unknown> = {}

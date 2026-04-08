@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { z } from 'zod'
 import { readAllUsers, verifyUserPassword } from '../userStorage.js'
 import { randomBytes } from 'node:crypto'
 import { registerToken, revokeToken } from '../middleware/auth.js'
@@ -15,15 +16,21 @@ const loginLimiter = rateLimit({
   legacyHeaders: false,
 })
 
+const loginSchema = z.object({
+  email: z.string().email('Email invalido'),
+  password: z.string().min(1, 'Senha obrigatoria'),
+})
+
 /**
  * POST /api/v1/auth/login
- * Publica — sem middleware de auth.
  */
 authRouter.post('/login', loginLimiter, (req, res) => {
-  const { email, password } = req.body
-  if (!email || !password) {
-    return res.status(400).json({ message: 'Email e senha obrigatorios' })
+  const parsed = loginSchema.safeParse(req.body)
+  if (!parsed.success) {
+    return res.status(400).json({ message: parsed.error.issues[0]?.message ?? 'Dados invalidos' })
   }
+
+  const { email, password } = parsed.data
 
   const user = readAllUsers().find(
     (u) => u.email.toLowerCase() === email.trim().toLowerCase() && u.status === 'active',
@@ -49,7 +56,6 @@ authRouter.post('/login', loginLimiter, (req, res) => {
 
 /**
  * POST /api/v1/auth/logout
- * Invalida o token.
  */
 authRouter.post('/logout', (req, res) => {
   const header = req.headers.authorization

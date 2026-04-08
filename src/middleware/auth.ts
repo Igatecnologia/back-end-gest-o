@@ -1,23 +1,41 @@
 import type { Request, Response, NextFunction } from 'express'
-import { readAllUsers } from '../userStorage.js'
+import { readAllUsersCached } from '../userStorage.js'
 
-/**
- * Armazena tokens validos em memoria (token -> userId).
- * Em producao, usar JWT ou Redis.
- */
-const activeTokens = new Map<string, string>()
+/* ── Tipos extendidos para o Request ── */
+export interface AuthenticatedRequest extends Request {
+  userId: string
+  userRole: string
+}
+
+/* ── Token store com TTL ── */
+const TOKEN_TTL_MS = 8 * 60 * 60 * 1000 // 8 horas
+
+type TokenEntry = { userId: string; createdAt: number }
+const activeTokens = new Map<string, TokenEntry>()
 
 export function registerToken(token: string, userId: string) {
-  activeTokens.set(token, userId)
+  activeTokens.set(token, { userId, createdAt: Date.now() })
 }
 
 export function revokeToken(token: string) {
   activeTokens.delete(token)
 }
 
+/** Remove tokens expirados — chamado periodicamente */
+function cleanupExpiredTokens() {
+  const now = Date.now()
+  for (const [token, entry] of activeTokens) {
+    if (now - entry.createdAt > TOKEN_TTL_MS) {
+      activeTokens.delete(token)
+    }
+  }
+}
+
+// Limpeza a cada 15 minutos
+setInterval(cleanupExpiredTokens, 15 * 60 * 1000).unref()
+
 /**
- * Middleware: exige Bearer token valido.
- * Adiciona req.userId e req.userRole ao request.
+ * Middleware: exige Bearer token valido com TTL.
  */
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const header = req.headers.authorization
@@ -26,19 +44,26 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   }
 
   const token = header.slice(7)
-  const userId = activeTokens.get(token)
-  if (!userId) {
+  const entry = activeTokens.get(token)
+  if (!entry) {
     return res.status(401).json({ message: 'Token invalido ou expirado' })
   }
 
-  const user = readAllUsers().find((u) => u.id === userId)
+  // Verificar TTL
+  if (Date.now() - entry.createdAt > TOKEN_TTL_MS) {
+    activeTokens.delete(token)
+    return res.status(401).json({ message: 'Sessao expirada. Faca login novamente.' })
+  }
+
+  const user = readAllUsersCached().find((u) => u.id === entry.userId)
   if (!user || user.status !== 'active') {
     activeTokens.delete(token)
     return res.status(401).json({ message: 'Usuario inativo' })
   }
 
-  ;(req as any).userId = user.id
-  ;(req as any).userRole = user.role
+  const authReq = req as AuthenticatedRequest
+  authReq.userId = user.id
+  authReq.userRole = user.role
   next()
 }
 
@@ -47,7 +72,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
  */
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   requireAuth(req, res, () => {
-    if ((req as any).userRole !== 'admin') {
+    if ((req as AuthenticatedRequest).userRole !== 'admin') {
       return res.status(403).json({ message: 'Acesso restrito a administradores' })
     }
     next()

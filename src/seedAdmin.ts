@@ -2,7 +2,7 @@ import { readAllUsers, writeAllUsers, genUserId, hashUserPassword } from './user
 
 export function seedDefaultAdmin() {
   const users = readAllUsers()
-  if (users.length > 0) return // ja tem usuarios
+  if (users.length > 0) return
 
   const now = new Date().toISOString()
   const admin = {
@@ -17,5 +17,5 @@ export function seedDefaultAdmin() {
   }
 
   writeAllUsers([admin])
-  console.log('[IGA Backend] Usuario admin criado: admin@iga.com / admin123')
+  console.log('[IGA Backend] Usuario admin padrao criado. Troque a senha apos o primeiro login.')
 }
