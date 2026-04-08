@@ -65,6 +65,9 @@ Servidor inicia em `http://localhost:3000`. Na primeira execucao cria o admin au
 | admin@iga.com | admin123 | Administrador |
 
 Criado automaticamente na primeira execucao. As credenciais de APIs externas sao configuradas pela tela de Fontes de Dados.
+No cadastro/edicao da fonte, voce pode enviar as credenciais como:
+- `authCredentials`: `"login:senha"`
+- ou campos separados: `apiLogin` e `apiPassword` (o backend converte automaticamente)
 
 ## Variaveis de ambiente
 
@@ -75,6 +78,32 @@ Copie `.env.example` para `.env`:
 | PORT | Porta do servidor | 3000 |
 | FRONTEND_URL | URL do frontend (CORS) | http://localhost:5173 |
 | SGBR_CREDENTIALS | login:senha da SGBR (alternativa ao datasource) | — |
+
+## Setup completo para novos devs (backend + frontend)
+
+### Ordem recomendada
+
+1. `back-end-gest-o`: `npm install` + `npm run dev`
+2. Validar `http://localhost:3000/health`
+3. `front-end-gest-o`: `npm install` + configurar `.env.local`
+4. Garantir `VITE_API_BASE_URL=http://localhost:3000`
+5. `front-end-gest-o`: `npm run dev`
+6. Abrir `http://localhost:5173` e logar com `admin@iga.com / admin123`
+
+### Checklist rapido de ambiente
+
+- CORS liberado para `http://localhost:5173` (`FRONTEND_URL`)
+- backend ativo na porta `3000`
+- frontend ativo na porta `5173`
+- login local funcionando em `POST /api/v1/auth/login`
+- `GET /api/v1/datasources` retornando dados quando houver fonte configurada
+
+### Problemas comuns
+
+- **401 no login**: conferir usuario/senha admin e arquivo `data/users.json`.
+- **Frontend sem dados**: conferir se o backend esta rodando e se a fonte foi cadastrada.
+- **Erro de CORS**: revisar `FRONTEND_URL` no `.env` do backend e reiniciar servidor.
+- **Tela "sistema nao configurado"**: normalmente `datasources` vazio para o tenant atual.
 
 ## Endpoints
 
