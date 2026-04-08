@@ -29,5 +29,8 @@ financeRouter.get('/estoque-materia-prima', (_req, res) => res.json([]))
 // GET /finance/estoque-espuma
 financeRouter.get('/estoque-espuma', (_req, res) => res.json([]))
 
+// GET /finance/estoque-produto-final
+financeRouter.get('/estoque-produto-final', (_req, res) => res.json([]))
+
 // GET /finance/vendas-espuma
 financeRouter.get('/vendas-espuma', (_req, res) => res.json([]))
