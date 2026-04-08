@@ -128,6 +128,66 @@ proxyRouter.post('/login', async (req, res) => {
 })
 
 /**
+ * GET /api/proxy/fields
+ * Diagnóstico: retorna todos os campos que a API externa envia (nomes + tipos + amostra).
+ */
+proxyRouter.get('/fields', async (req, res) => {
+  const source = readAll().find((ds) => ds.dataEndpoint)
+  if (!source) {
+    return res.status(400).json({ message: 'Nenhuma conexao com caminho de dados configurado' })
+  }
+
+  const headers: Record<string, string> = { Accept: 'application/json' }
+
+  if (source.isAuthSource && source.loginEndpoint) {
+    const token = await getTokenForSource(source)
+    if (!token) {
+      return res.status(401).json({ message: 'Nao foi possivel autenticar.' })
+    }
+    headers.Authorization = `Bearer ${token}`
+  } else if (source.authMethod === 'bearer_token' && source.authCredentials) {
+    headers.Authorization = `Bearer ${source.authCredentials}`
+  }
+
+  const baseUrl = source.apiUrl.replace(/\/+$/, '')
+  const dataEndpoint = source.dataEndpoint!
+
+  const params = new URLSearchParams()
+  for (const [key, val] of Object.entries(req.query)) {
+    if (typeof val === 'string') params.set(key, val)
+  }
+  const sep = dataEndpoint.includes('?') ? '&' : '?'
+  const fullUrl = `${baseUrl}${dataEndpoint}${params.toString() ? `${sep}${params}` : ''}`
+
+  try {
+    const apiRes = await fetch(fullUrl, { method: 'GET', headers, signal: AbortSignal.timeout(30_000) })
+    if (!apiRes.ok) {
+      return res.status(apiRes.status).json({ message: `Erro (${apiRes.status})` })
+    }
+
+    const rawData = await apiRes.json()
+    const arr = extractDataArray(rawData)
+
+    if (arr.length === 0) {
+      return res.json({ totalRows: 0, fields: [], sample: [] })
+    }
+
+    const firstRow = arr[0] as Record<string, unknown>
+    const fields = Object.entries(firstRow).map(([key, value]) => ({
+      name: key,
+      type: value === null ? 'null' : typeof value,
+      sample: typeof value === 'string' && value.length > 100 ? value.slice(0, 100) + '...' : value,
+    }))
+
+    const sample = arr.slice(0, 3)
+
+    res.json({ totalRows: arr.length, fields, sample })
+  } catch (err) {
+    res.status(502).json({ message: `Falha: ${err instanceof Error ? err.message : 'erro'}` })
+  }
+})
+
+/**
  * GET /api/proxy/data
  */
 proxyRouter.get('/data', async (req, res) => {
