@@ -12,6 +12,20 @@ type TestResult = {
   totalRows?: number
 }
 
+const LOGIN_TIMEOUT_MS = 20_000
+const DATA_TIMEOUT_MS = 45_000
+const SERVER_TIMEOUT_MS = 15_000
+
+function describeTimeout(err: unknown, context: string): string | null {
+  if (!(err instanceof Error)) return null
+  if (err.name === 'TimeoutError' || /aborted due to timeout/i.test(err.message)) {
+    return `${context} demorou mais que o limite configurado (${Math.round(
+      (context.includes('dados') ? DATA_TIMEOUT_MS : LOGIN_TIMEOUT_MS) / 1000,
+    )}s). Tente reduzir o intervalo de datas ou validar a latencia da API externa.`
+  }
+  return null
+}
+
 function inferFieldType(value: unknown): string {
   if (value === null || value === undefined) return 'null'
   if (typeof value === 'number') return Number.isInteger(value) ? 'integer' : 'decimal'
@@ -64,7 +78,7 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(loginBody),
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(LOGIN_TIMEOUT_MS),
       })
 
       if (!loginRes.ok) {
@@ -91,10 +105,11 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
       }
     } catch (err) {
       const latencyMs = Math.round(performance.now() - start)
+      const timeoutMessage = describeTimeout(err, 'Login')
       return {
         success: false,
         latencyMs,
-        message: `Falha no login: ${err instanceof Error ? err.message : 'erro desconhecido'}`,
+        message: timeoutMessage ?? `Falha no login: ${err instanceof Error ? err.message : 'erro desconhecido'}`,
       }
     }
   }
@@ -136,7 +151,7 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
       const dataRes = await fetch(dataUrl, {
         method: 'GET',
         headers,
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(DATA_TIMEOUT_MS),
       })
 
       const latencyMs = Math.round(performance.now() - start)
@@ -195,10 +210,11 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
       }
     } catch (err) {
       const latencyMs = Math.round(performance.now() - start)
+      const timeoutMessage = describeTimeout(err, 'Consulta de dados')
       return {
         success: false,
         latencyMs,
-        message: `Falha ao buscar dados: ${err instanceof Error ? err.message : 'erro'}`,
+        message: timeoutMessage ?? `Falha ao buscar dados: ${err instanceof Error ? err.message : 'erro'}`,
       }
     }
   }
@@ -207,7 +223,7 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
   try {
     const res = await fetch(baseUrl, {
       method: 'HEAD',
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(SERVER_TIMEOUT_MS),
     })
     const latencyMs = Math.round(performance.now() - start)
     return {

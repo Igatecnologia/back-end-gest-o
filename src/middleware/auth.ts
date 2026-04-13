@@ -13,6 +13,19 @@ const TOKEN_TTL_MS = 8 * 60 * 60 * 1000 // 8 horas
 type TokenEntry = { userId: string; createdAt: number }
 const activeTokens = new Map<string, TokenEntry>()
 
+function readTokenFromCookie(req: Request): string | null {
+  const cookieHeader = req.headers.cookie
+  if (!cookieHeader) return null
+  const pairs = cookieHeader.split(';')
+  for (const pair of pairs) {
+    const [rawName, ...rawValue] = pair.trim().split('=')
+    if (rawName !== 'iga_session') continue
+    const value = rawValue.join('=')
+    return value ? decodeURIComponent(value) : null
+  }
+  return null
+}
+
 export function registerToken(token: string, userId: string) {
   activeTokens.set(token, { userId, createdAt: Date.now() })
 }
@@ -39,11 +52,11 @@ setInterval(cleanupExpiredTokens, 15 * 60 * 1000).unref()
  */
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const header = req.headers.authorization
-  if (!header?.startsWith('Bearer ')) {
+  const bearerToken = header?.startsWith('Bearer ') ? header.slice(7) : null
+  const token = bearerToken ?? readTokenFromCookie(req)
+  if (!token) {
     return res.status(401).json({ message: 'Token nao fornecido' })
   }
-
-  const token = header.slice(7)
   const entry = activeTokens.get(token)
   if (!entry) {
     return res.status(401).json({ message: 'Token invalido ou expirado' })

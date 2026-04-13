@@ -7,9 +7,15 @@ import {
   hashUserPassword,
   type UserRecord,
 } from '../userStorage.js'
+import { isValidPermission } from '../permissions.js'
 import type { AuthenticatedRequest } from '../middleware/auth.js'
 
 export const usersRouter = Router()
+
+const permissionsArraySchema = z
+  .array(z.string())
+  .min(1, 'Selecione ao menos uma permissao')
+  .refine((arr) => arr.every((p) => isValidPermission(p)), 'Permissao invalida')
 
 const createUserSchema = z.object({
   name: z.string().min(1, 'Nome obrigatorio').max(200),
@@ -17,6 +23,7 @@ const createUserSchema = z.object({
   password: z.string().min(6, 'Senha deve ter no minimo 6 caracteres'),
   role: z.enum(['admin', 'manager', 'viewer']).default('viewer'),
   status: z.enum(['active', 'inactive']).default('active'),
+  permissions: permissionsArraySchema.optional(),
 })
 
 const updateUserSchema = z.object({
@@ -25,11 +32,16 @@ const updateUserSchema = z.object({
   password: z.string().min(6).optional(),
   role: z.enum(['admin', 'manager', 'viewer']).optional(),
   status: z.enum(['active', 'inactive']).optional(),
+  /** `null` remove personalizacao e volta ao padrao do perfil */
+  permissions: z.union([permissionsArraySchema, z.null()]).optional(),
 })
 
 function sanitize(u: UserRecord) {
   const { passwordHash: _, ...safe } = u
-  return safe
+  return {
+    ...safe,
+    permissions: u.permissions ?? null,
+  }
 }
 
 // GET /
@@ -44,7 +56,7 @@ usersRouter.post('/', (req, res) => {
     return res.status(400).json({ message: parsed.error.issues[0]?.message ?? 'Dados invalidos' })
   }
 
-  const { name, email, password, role, status } = parsed.data
+  const { name, email, password, role, status, permissions } = parsed.data
   const all = readAllUsers()
 
   if (all.some((u) => u.email.toLowerCase() === email.trim().toLowerCase())) {
@@ -61,6 +73,9 @@ usersRouter.post('/', (req, res) => {
     passwordHash: hashUserPassword(password),
     createdAt: now,
     updatedAt: now,
+    ...(permissions && {
+      permissions: [...new Set(permissions)].sort(),
+    }),
   }
 
   writeAllUsers([...all, user])
@@ -78,7 +93,7 @@ usersRouter.put('/:id', (req, res) => {
   const idx = all.findIndex((u) => u.id === req.params.id)
   if (idx < 0) return res.status(404).json({ message: 'Usuario nao encontrado' })
 
-  const { name, email, password, role, status } = parsed.data
+  const { name, email, password, role, status, permissions } = parsed.data
 
   if (email) {
     const duplicate = all.find(
@@ -89,7 +104,7 @@ usersRouter.put('/:id', (req, res) => {
     }
   }
 
-  all[idx] = {
+  const next: UserRecord = {
     ...all[idx],
     ...(name != null && { name: name.trim() }),
     ...(email != null && { email: email.trim().toLowerCase() }),
@@ -98,6 +113,16 @@ usersRouter.put('/:id', (req, res) => {
     ...(password && { passwordHash: hashUserPassword(password) }),
     updatedAt: new Date().toISOString(),
   }
+
+  if (permissions !== undefined) {
+    if (permissions === null) {
+      delete next.permissions
+    } else {
+      next.permissions = [...new Set(permissions)].sort()
+    }
+  }
+
+  all[idx] = next
 
   writeAllUsers(all)
   res.json(sanitize(all[idx]))

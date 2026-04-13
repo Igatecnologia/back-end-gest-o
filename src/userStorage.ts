@@ -12,6 +12,8 @@ export type UserRecord = {
   email: string
   role: 'admin' | 'manager' | 'viewer'
   status: 'active' | 'inactive'
+  /** Se definido, substitui o pacote padrão do perfil. */
+  permissions?: string[]
   passwordHash: string
   createdAt: string
   updatedAt: string

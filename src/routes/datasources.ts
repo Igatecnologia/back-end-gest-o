@@ -1,8 +1,11 @@
 import { Router } from 'express'
 import { readAll, writeAll, genId, type DataSource } from '../storage.js'
 import { testConnection } from '../services/connectionTester.js'
+import { requireAuth } from '../middleware/auth.js'
+import { resolveTenantId } from '../utils/tenant.js'
 
 export const dataSourceRouter = Router()
+dataSourceRouter.use(requireAuth)
 
 /**
  * Sanitiza campos para evitar config errada:
@@ -72,15 +75,20 @@ function sanitize(body: DataSourceBody) {
 
 // GET / — lista todas
 dataSourceRouter.get('/', (_req, res) => {
-  const all = readAll().map((ds) => ({ ...ds, authCredentials: undefined }))
+  const tenantId = resolveTenantId(_req)
+  const all = readAll()
+    .filter((ds) => ds.tenantId === tenantId)
+    .map((ds) => ({ ...ds, authCredentials: undefined }))
   res.json(all)
 })
 
 // POST /test — testa config ANTES de salvar (DEVE vir antes de /:id)
 dataSourceRouter.post('/test', async (req, res) => {
+  const tenantId = resolveTenantId(req)
   const body = req.body as DataSourceBody
   const dsForTest = {
     ...body,
+    tenantId,
     authCredentials: resolveAuthCredentials(body),
   } as DataSource
 
@@ -90,25 +98,29 @@ dataSourceRouter.post('/test', async (req, res) => {
 
 // GET /:id
 dataSourceRouter.get('/:id', (req, res) => {
-  const ds = readAll().find((d) => d.id === req.params.id)
+  const tenantId = resolveTenantId(req)
+  const ds = readAll().find((d) => d.id === req.params.id && d.tenantId === tenantId)
   if (!ds) return res.status(404).json({ message: 'Nao encontrada' })
   res.json({ ...ds, authCredentials: undefined })
 })
 
 // POST / — cria
 dataSourceRouter.post('/', (req, res) => {
+  const tenantId = resolveTenantId(req)
   const body = req.body as DataSourceBody
   sanitize(body)
   if (!body.name || !body.apiUrl) {
     return res.status(400).json({ message: 'Nome e URL da API sao obrigatorios' })
   }
   let all = readAll()
-  if (body.isAuthSource) all = all.map((ds) => ({ ...ds, isAuthSource: false }))
+  if (body.isAuthSource) {
+    all = all.map((ds) => (ds.tenantId === tenantId ? { ...ds, isAuthSource: false } : ds))
+  }
 
   const now = new Date().toISOString()
   const ds: DataSource = {
     id: genId(),
-    tenantId: body.tenantId ?? 'default',
+    tenantId,
     name: body.name,
     type: body.type ?? 'rest_api',
     apiUrl: body.apiUrl,
@@ -134,13 +146,16 @@ dataSourceRouter.post('/', (req, res) => {
 
 // PUT /:id — atualiza
 dataSourceRouter.put('/:id', (req, res) => {
+  const tenantId = resolveTenantId(req)
   let all = readAll()
-  const idx = all.findIndex((d) => d.id === req.params.id)
+  const idx = all.findIndex((d) => d.id === req.params.id && d.tenantId === tenantId)
   if (idx < 0) return res.status(404).json({ message: 'Nao encontrada' })
 
   const body = req.body as DataSourceBody
   sanitize(body)
-  if (body.isAuthSource) all = all.map((ds, i) => i === idx ? ds : { ...ds, isAuthSource: false })
+  if (body.isAuthSource) {
+    all = all.map((ds, i) => (i === idx || ds.tenantId !== tenantId ? ds : { ...ds, isAuthSource: false }))
+  }
   const nextAuthCredentials = resolveAuthCredentials(body)
 
   all[idx] = {
@@ -166,14 +181,16 @@ dataSourceRouter.put('/:id', (req, res) => {
 
 // DELETE /:id
 dataSourceRouter.delete('/:id', (req, res) => {
-  writeAll(readAll().filter((d) => d.id !== req.params.id))
+  const tenantId = resolveTenantId(req)
+  writeAll(readAll().filter((d) => !(d.id === req.params.id && d.tenantId === tenantId)))
   res.json({ ok: true })
 })
 
 // POST /:id/test — testa fonte salva
 dataSourceRouter.post('/:id/test', async (req, res) => {
+  const tenantId = resolveTenantId(req)
   const all = readAll()
-  const ds = all.find((d) => d.id === req.params.id)
+  const ds = all.find((d) => d.id === req.params.id && d.tenantId === tenantId)
   if (!ds) return res.status(404).json({ message: 'Nao encontrada' })
 
   const result = await testConnection(ds)

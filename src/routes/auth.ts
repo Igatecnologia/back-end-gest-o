@@ -1,11 +1,50 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { readAllUsers, verifyUserPassword } from '../userStorage.js'
+import { resolveEffectivePermissions } from '../permissions.js'
 import { randomBytes } from 'node:crypto'
 import { registerToken, revokeToken } from '../middleware/auth.js'
 import rateLimit from 'express-rate-limit'
 
 export const authRouter = Router()
+
+function buildSessionCookie(token: string): string {
+  const isProd = process.env.NODE_ENV === 'production'
+  const parts = [
+    `iga_session=${encodeURIComponent(token)}`,
+    'HttpOnly',
+    'Path=/',
+    'Max-Age=28800',
+    'SameSite=Strict',
+  ]
+  if (isProd) parts.push('Secure')
+  return parts.join('; ')
+}
+
+function clearSessionCookie(): string {
+  const isProd = process.env.NODE_ENV === 'production'
+  const parts = [
+    'iga_session=',
+    'HttpOnly',
+    'Path=/',
+    'Max-Age=0',
+    'SameSite=Strict',
+  ]
+  if (isProd) parts.push('Secure')
+  return parts.join('; ')
+}
+
+function readSessionCookieToken(cookieHeader?: string): string | null {
+  if (!cookieHeader) return null
+  const cookies = cookieHeader.split(';')
+  for (const cookie of cookies) {
+    const [name, ...valueParts] = cookie.trim().split('=')
+    if (name !== 'iga_session') continue
+    const value = valueParts.join('=')
+    return value ? decodeURIComponent(value) : null
+  }
+  return null
+}
 
 /** Rate limit: maximo 10 tentativas de login por IP a cada 15 min */
 const loginLimiter = rateLimit({
@@ -42,6 +81,9 @@ authRouter.post('/login', loginLimiter, (req, res) => {
 
   const token = randomBytes(32).toString('hex')
   registerToken(token, user.id)
+  res.setHeader('Set-Cookie', buildSessionCookie(token))
+
+  const permissions = resolveEffectivePermissions(user.role, user.permissions)
 
   res.json({
     token,
@@ -51,6 +93,7 @@ authRouter.post('/login', loginLimiter, (req, res) => {
       email: user.email,
       role: user.role,
     },
+    permissions,
   })
 })
 
@@ -59,8 +102,10 @@ authRouter.post('/login', loginLimiter, (req, res) => {
  */
 authRouter.post('/logout', (req, res) => {
   const header = req.headers.authorization
-  if (header?.startsWith('Bearer ')) {
-    revokeToken(header.slice(7))
-  }
+  const token = header?.startsWith('Bearer ')
+    ? header.slice(7)
+    : readSessionCookieToken(req.headers.cookie)
+  if (token) revokeToken(token)
+  res.setHeader('Set-Cookie', clearSessionCookie())
   res.json({ ok: true })
 })
