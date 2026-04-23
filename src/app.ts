@@ -40,6 +40,10 @@ type CreateAppOptions = {
 
 export function createApp(options: CreateAppOptions = {}) {
   const app = express()
+  // Render/Railway/Heroku usam proxy reverso — sem isso, cookies Secure não funcionam
+  if (process.env.NODE_ENV === 'production') {
+    app.set('trust proxy', 1)
+  }
   const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173'
   const startSchedulers = options.startSchedulers ?? true
 
