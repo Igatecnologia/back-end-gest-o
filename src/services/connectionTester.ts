@@ -1,6 +1,7 @@
 import type { DataSource } from '../storage.js'
 import { hashPassword } from './passwordHasher.js'
 import { extractDataArray } from '../utils/extractDataArray.js'
+import { joinApiUrl } from '../utils/joinApiUrl.js'
 
 type TestResult = {
   success: boolean
@@ -9,11 +10,15 @@ type TestResult = {
   sampleFields?: string[]
   sampleRows?: Record<string, unknown>[]
   fieldTypes?: Record<string, string>
+  /** Linhas contadas nesta resposta (geralmente 1ª página). */
   totalRows?: number
+  /** Quando a API envia total de registros na raiz, pode ser > linhas da 1ª resposta. */
+  apiReportedTotal?: number
 }
 
 const LOGIN_TIMEOUT_MS = 20_000
-const DATA_TIMEOUT_MS = 45_000
+/** Deve ser ≤ timeout HTTP do frontend (axios) e suficiente para SGBR em intervalos grandes */
+const DATA_TIMEOUT_MS = 120_000
 const SERVER_TIMEOUT_MS = 15_000
 
 function describeTimeout(err: unknown, context: string): string | null {
@@ -24,6 +29,60 @@ function describeTimeout(err: unknown, context: string): string | null {
     )}s). Tente reduzir o intervalo de datas ou validar a latencia da API externa.`
   }
   return null
+}
+
+/**
+ * Compara linhas extraídas com metadados comuns de paginação / total na raiz do JSON SGBR.
+ */
+function describeCountVersusApiMeta(
+  rawData: unknown,
+  arrLen: number,
+): { messageSuffix: string; apiReportedTotal?: number } {
+  if (!rawData || typeof rawData !== 'object' || Array.isArray(rawData)) {
+    return { messageSuffix: '' }
+  }
+  const o = rawData as Record<string, unknown>
+  const totalRec =
+    typeof o.total === 'number'
+      ? o.total
+      : typeof o.total_registros === 'number'
+        ? o.total_registros
+        : typeof o.totalRows === 'number'
+          ? o.totalRows
+          : typeof o.qt_registros === 'number'
+            ? o.qt_registros
+            : typeof o.qtd_registros === 'number'
+              ? o.qtd_registros
+              : undefined
+  const totalPages =
+    typeof o.totalPages === 'number'
+      ? o.totalPages
+      : typeof o.total_paginas === 'number'
+        ? o.total_paginas
+        : typeof o.last_page === 'number'
+          ? o.last_page
+          : undefined
+  const page = typeof o.page === 'number' ? o.page : typeof o.pagina === 'number' ? o.pagina : undefined
+
+  if (typeof totalRec === 'number' && totalRec > arrLen) {
+    return {
+      messageSuffix: ` — total informado pela API: ${totalRec} (nesta resposta: ${arrLen} linhas)`,
+      apiReportedTotal: totalRec,
+    }
+  }
+  if (typeof totalPages === 'number' && totalPages > 1) {
+    return {
+      messageSuffix: ` — página ${page ?? 1}/${totalPages}: o teste só analisa a 1ª resposta; no app o proxy pode buscar as demais`,
+      apiReportedTotal: typeof totalRec === 'number' ? totalRec : undefined,
+    }
+  }
+  if (typeof totalRec === 'number' && totalRec === arrLen) {
+    return {
+      messageSuffix: ` — total na API coincide com esta resposta (${arrLen})`,
+      apiReportedTotal: totalRec,
+    }
+  }
+  return { messageSuffix: '' }
 }
 
 function inferFieldType(value: unknown): string {
@@ -54,10 +113,10 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
 
   let token: string | null = null
 
-  // ── Passo 1: Login (se configurado) ──
-  if (ds.isAuthSource && ds.loginEndpoint) {
+  // ── Passo 1: Login JWT (se configurado) — independente de isAuthSource (só uma fonte pode ser login do app, mas todas podem ter token para consultas)
+  if (ds.loginEndpoint) {
     try {
-      const loginUrl = `${baseUrl}${ds.loginEndpoint}`
+      const loginUrl = joinApiUrl(baseUrl, ds.loginEndpoint ?? '')
       const fieldUser = ds.loginFieldUser ?? 'login'
       const fieldPass = ds.loginFieldPassword ?? 'senha'
       const passwordMode = ds.passwordMode ?? 'plain'
@@ -97,7 +156,7 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
 
       if (!token) {
         for (const [, val] of Object.entries(loginData)) {
-          if (typeof val === 'string' && val.length >= 20 && /^[A-Za-z0-9._\-]+$/.test(val)) {
+          if (typeof val === 'string' && val.length >= 20 && /^[A-Za-z0-9._-]+$/.test(val)) {
             token = val
             break
           }
@@ -117,11 +176,18 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
   // ── Passo 2: Buscar dados ──
   if (ds.dataEndpoint) {
     try {
-      let dataUrl = `${baseUrl}${ds.dataEndpoint}`
+      let dataUrl = joinApiUrl(baseUrl, ds.dataEndpoint ?? '')
 
       if (!ds.dataEndpoint.includes('dt_de') && !ds.dataEndpoint.includes('start') && !ds.dataEndpoint.includes('desde')) {
         const now = new Date()
-        const inicio = new Date('2020-01-01')
+        const inicio = new Date(now)
+        /** Endpoints financeiros (contas a pagar/receber) podem trazer payload enorme: janela curta no teste. */
+        const isHeavyEndpoint = /contas[/_-]?(pag|receber)/i.test(ds.dataEndpoint)
+        if (isHeavyEndpoint) {
+          inicio.setDate(inicio.getDate() - 30)
+        } else {
+          inicio.setMonth(inicio.getMonth() - 3)
+        }
 
         const fmtDot = (d: Date) =>
           `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`
@@ -131,7 +197,8 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
         const sep = ds.dataEndpoint.includes('?') ? '&' : '?'
 
         if (ds.type === 'sgbr_bi') {
-          dataUrl = `${dataUrl}${sep}dt_de=${fmtDot(inicio)}&dt_ate=${fmtDot(now)}`
+          /** `tamanho=100` limita o payload no teste — valida conectividade sem puxar base inteira. */
+          dataUrl = `${dataUrl}${sep}dt_de=${fmtDot(inicio)}&dt_ate=${fmtDot(now)}&tamanho=100`
         } else {
           dataUrl = `${dataUrl}${sep}dt_de=${fmtDot(inicio)}&dt_ate=${fmtDot(now)}&start_date=${fmtDash(inicio)}&end_date=${fmtDash(now)}`
         }
@@ -157,17 +224,23 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
       const latencyMs = Math.round(performance.now() - start)
 
       if (!dataRes.ok) {
+        const pathHint = ds.dataEndpoint?.trim() || '(sem caminho)'
+        const baseHint = joinApiUrl(baseUrl, pathHint)
         return {
           success: false,
           latencyMs,
-          message: dataRes.status === 401
-            ? 'Acesso negado aos dados — token invalido ou expirado'
-            : `Erro ao buscar dados (${dataRes.status})`,
+          message:
+            dataRes.status === 401
+              ? 'Acesso negado aos dados — token invalido ou expirado'
+              : dataRes.status === 404
+                ? `404 na API externa — rota inexistente. Confira "Caminho dos dados" (ex.: /sgbrbi/contas/pagas). Tentativa: ${baseHint}`
+                : `Erro ao buscar dados (${dataRes.status}) — ${baseHint}`,
         }
       }
 
       const rawData = await dataRes.json()
       const arr = extractDataArray(rawData)
+      const countMeta = describeCountVersusApiMeta(rawData, arr.length)
 
       if (arr.length === 0) {
         return {
@@ -202,11 +275,12 @@ export async function testConnection(ds: DataSource): Promise<TestResult> {
       return {
         success: true,
         latencyMs,
-        message: `${arr.length} registro${arr.length !== 1 ? 's' : ''} encontrado${arr.length !== 1 ? 's' : ''} (${latencyMs}ms)`,
+        message: `${arr.length} registro${arr.length !== 1 ? 's' : ''} nesta resposta${countMeta.messageSuffix} (${latencyMs}ms)`,
         sampleFields,
         sampleRows,
         fieldTypes,
         totalRows: arr.length,
+        ...(countMeta.apiReportedTotal != null ? { apiReportedTotal: countMeta.apiReportedTotal } : {}),
       }
     } catch (err) {
       const latencyMs = Math.round(performance.now() - start)

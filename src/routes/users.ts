@@ -9,8 +9,16 @@ import {
 } from '../userStorage.js'
 import { isValidPermission } from '../permissions.js'
 import type { AuthenticatedRequest } from '../middleware/auth.js'
+import rateLimit from 'express-rate-limit'
 
 export const usersRouter = Router()
+
+const createUserLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+})
 
 const permissionsArraySchema = z
   .array(z.string())
@@ -50,7 +58,7 @@ usersRouter.get('/', (_req, res) => {
 })
 
 // POST /
-usersRouter.post('/', (req, res) => {
+usersRouter.post('/', createUserLimiter, (req, res) => {
   const parsed = createUserSchema.safeParse(req.body)
   if (!parsed.success) {
     return res.status(400).json({ message: parsed.error.issues[0]?.message ?? 'Dados invalidos' })
@@ -110,7 +118,8 @@ usersRouter.put('/:id', (req, res) => {
     ...(email != null && { email: email.trim().toLowerCase() }),
     ...(role != null && { role }),
     ...(status != null && { status }),
-    ...(password && { passwordHash: hashUserPassword(password) }),
+    /** Reset de senha por admin força o usuário a trocar no próximo login. */
+    ...(password && { passwordHash: hashUserPassword(password), mustChangePassword: true }),
     updatedAt: new Date().toISOString(),
   }
 

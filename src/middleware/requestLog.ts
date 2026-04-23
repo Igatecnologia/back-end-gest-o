@@ -4,6 +4,10 @@ import type { Request, Response, NextFunction } from 'express'
 /**
  * Log JSON por request (ativar com LOG_JSON_REQUESTS=1).
  * Inclui correlacao basica para observabilidade (Sprint 7).
+ *
+ * SEGURANÇA: este log NUNCA inclui body/query/headers — apenas path, status e
+ * duração. Se for adicionar novos campos, manter a regra: zero conteúdo de
+ * request (senhas, tokens, authCredentials etc. vazariam para stdout/arquivo).
  */
 export function jsonRequestLog(req: Request, res: Response, next: NextFunction) {
   if (process.env.LOG_JSON_REQUESTS !== '1') {
