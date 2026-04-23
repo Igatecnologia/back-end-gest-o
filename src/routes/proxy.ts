@@ -207,35 +207,47 @@ async function getTokenForSource(source: ReturnType<typeof readAll>[number]): Pr
 
   if (!defaultLogin || !defaultPassword) return null
 
-  try {
-    const hashedPassword = await hashPassword(defaultPassword, passwordMode)
-    const body: Record<string, string> = {
-      [fieldUser]: defaultLogin,
-      [fieldPass]: hashedPassword,
-    }
-
-    const apiRes = await fetch(joinApiUrl(baseUrl, loginEndpoint), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(10_000),
-    })
-
-    if (!apiRes.ok) return null
-
-    const data = await apiRes.json() as Record<string, unknown>
-    const token = (
-      data.token ?? data.access_token ?? data.jwt ?? data.bearer ??
-      data.sessionToken ?? data.session_token ?? data.apiToken ?? data.api_token ??
-      data.id_token ?? data.auth_token ?? data.authToken ?? data.accessToken
-    ) as string | undefined
-    if (!token) return null
-
-    tokenCache.set(cacheKey, { token, expiresAt: Date.now() + 55 * 60 * 1000 })
-    return token
-  } catch {
-    return null
+  const hashedPassword = await hashPassword(defaultPassword, passwordMode)
+  const body: Record<string, string> = {
+    [fieldUser]: defaultLogin,
+    [fieldPass]: hashedPassword,
   }
+  const loginUrl = joinApiUrl(baseUrl, loginEndpoint)
+
+  // Retry com back-off: SGBR pode ser lento — timeout de 20s e até 2 tentativas
+  const MAX_LOGIN_ATTEMPTS = 2
+  const LOGIN_TIMEOUT_MS = 20_000
+  for (let attempt = 1; attempt <= MAX_LOGIN_ATTEMPTS; attempt++) {
+    try {
+      const apiRes = await fetch(loginUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(LOGIN_TIMEOUT_MS),
+      })
+
+      if (!apiRes.ok) {
+        if (attempt < MAX_LOGIN_ATTEMPTS) continue
+        return null
+      }
+
+      const data = await apiRes.json() as Record<string, unknown>
+      const token = (
+        data.token ?? data.access_token ?? data.jwt ?? data.bearer ??
+        data.sessionToken ?? data.session_token ?? data.apiToken ?? data.api_token ??
+        data.id_token ?? data.auth_token ?? data.authToken ?? data.accessToken
+      ) as string | undefined
+      if (!token) return null
+
+      // TTL 45 min — margem de segurança contra expiração server-side (tokens SGBR duram ~60 min)
+      tokenCache.set(cacheKey, { token, expiresAt: Date.now() + 45 * 60 * 1000 })
+      return token
+    } catch {
+      if (attempt < MAX_LOGIN_ATTEMPTS) continue
+      return null
+    }
+  }
+  return null
 }
 
 /**
@@ -285,7 +297,7 @@ proxyRouter.post('/login', async (req, res) => {
     const cacheKey = authSource.id ?? authSource.apiUrl
     const token = data.token ?? data.access_token ?? data.jwt ?? data.bearer
     if (token) {
-      tokenCache.set(cacheKey, { token, expiresAt: Date.now() + 55 * 60 * 1000 })
+      tokenCache.set(cacheKey, { token, expiresAt: Date.now() + 45 * 60 * 1000 })
     }
 
     res.json(data)
@@ -926,7 +938,6 @@ proxyRouter.get('/data', async (req, res) => {
   }
 
   const deadlineAt = Date.now() + PROXY_GLOBAL_DEADLINE_MS
-  timings.authMs = Date.now() - proxyStartedAt
 
   /** Aplica field mappings se configurados no datasource. */
   const finalize = (rows: unknown[]) => applyFieldMappings(rows, source.fieldMappings ?? [])
@@ -934,7 +945,7 @@ proxyRouter.get('/data', async (req, res) => {
   try {
     let apiRes = await fetchUrl(fullUrl, headers)
 
-    // Retry automático em 401 com re-login
+    // Retry automático em 401 com re-login (token expirado no SGBR)
     if (apiRes.status === 401 && source.loginEndpoint) {
       const cacheKey = source.id ?? source.apiUrl
       tokenCache.delete(cacheKey)
@@ -945,6 +956,8 @@ proxyRouter.get('/data', async (req, res) => {
       headers.Authorization = `Bearer ${newToken}`
       apiRes = await fetchUrl(fullUrl, headers)
     }
+
+    timings.authMs = Date.now() - proxyStartedAt
 
     if (!apiRes.ok) {
       proxyStats.dataErrors++

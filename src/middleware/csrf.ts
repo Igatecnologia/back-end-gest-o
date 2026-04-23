@@ -30,15 +30,21 @@ export function generateCsrfToken(): string {
   return randomBytes(TOKEN_LENGTH).toString('hex')
 }
 
+/**
+ * Secure flag só em HTTPS real — Electron serve via http://127.0.0.1 e o
+ * Chromium descarta cookies Secure em conexões não-TLS.
+ */
+const useSecureCookie =
+  process.env.NODE_ENV === 'production' && !process.env.ELECTRON_RUN_AS_NODE
+
 export function buildCsrfCookie(token: string): string {
-  const isProd = process.env.NODE_ENV === 'production'
   const parts = [
     `${CSRF_COOKIE}=${token}`,
     'Path=/',
     'Max-Age=28800', // 8h, mesmo que a sessão
     'SameSite=Strict',
   ]
-  if (isProd) parts.push('Secure')
+  if (useSecureCookie) parts.push('Secure')
   // NÃO HttpOnly — o frontend precisa ler esse cookie
   return parts.join('; ')
 }

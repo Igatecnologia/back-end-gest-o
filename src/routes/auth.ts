@@ -16,8 +16,14 @@ import { generateCsrfToken, buildCsrfCookie } from '../middleware/csrf.js'
 
 export const authRouter = Router()
 
+/**
+ * Secure flag só quando em HTTPS real — Electron roda em http://127.0.0.1,
+ * onde o Chromium descarta cookies Secure e o login quebra silenciosamente.
+ */
+const useSecureCookie =
+  process.env.NODE_ENV === 'production' && !process.env.ELECTRON_RUN_AS_NODE
+
 function buildSessionCookie(token: string): string {
-  const isProd = process.env.NODE_ENV === 'production'
   const parts = [
     `iga_session=${encodeURIComponent(token)}`,
     'HttpOnly',
@@ -25,12 +31,11 @@ function buildSessionCookie(token: string): string {
     'Max-Age=28800',
     'SameSite=Strict',
   ]
-  if (isProd) parts.push('Secure')
+  if (useSecureCookie) parts.push('Secure')
   return parts.join('; ')
 }
 
 function clearSessionCookie(): string {
-  const isProd = process.env.NODE_ENV === 'production'
   const parts = [
     'iga_session=',
     'HttpOnly',
@@ -38,7 +43,7 @@ function clearSessionCookie(): string {
     'Max-Age=0',
     'SameSite=Strict',
   ]
-  if (isProd) parts.push('Secure')
+  if (useSecureCookie) parts.push('Secure')
   return parts.join('; ')
 }
 
