@@ -9,7 +9,7 @@ echo "==> Clonando e buildando frontend..."
 cd /tmp
 git clone --depth 1 https://github.com/Igatecnologia/front-end-gest-o.git
 cd front-end-gest-o
-npm install
+npm install --include=dev
 VITE_API_BASE_URL= VITE_USE_MOCKS=false npm run build
 
 echo "==> Copiando frontend para backend..."
