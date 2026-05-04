@@ -1,0 +1,46 @@
+# Configuração de produção - sobrescreve docker-compose.yml
+# Usar com: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+version: '3.9'
+
+services:
+  backend:
+    # Override das configurações para produção
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - LOG_LEVEL=warn
+      # Configure as variáveis específicas de produção
+      # - DATABASE_URL=${DATABASE_URL}
+      # - CORS_ORIGIN=${CORS_ORIGIN}
+    
+    restart: always
+    
+    # Limitar recursos
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '1'
+          memory: 512M
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Não expor porta diretamente (usar reverse proxy)
+    # ports:
+    #   - "127.0.0.1:3000:3000"
+    
+    # Rede isolada
+    networks:
+      - iga-network
+
+networks:
+  iga-network:
+    driver: bridge

@@ -1,0 +1,56 @@
+version: '3.9'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: iga-gestao-backend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - PORT_MAX=3020
+      # Adicione outras variáveis de ambiente conforme necessário:
+      # - DATABASE_URL=...
+      # - CORS_ORIGIN=...
+      # - LOG_LEVEL=...
+    volumes:
+      # Mapeie o diretório de dados se necessário
+      - backend_data:/app/data
+      # Para desenvolvimento com reload automático (comentado por padrão)
+      # - ./src:/app/src
+      # - ./package.json:/app/package.json
+    restart: unless-stopped
+    # Descomentar para modo desenvolvimento com hot-reload
+    # command: npm run dev
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - iga-network
+
+  # Exemplo de serviço adicional (descomente se necessário)
+  # database:
+  #   image: postgres:16-alpine
+  #   container_name: iga-gestao-db
+  #   environment:
+  #     POSTGRES_USER: iga_user
+  #     POSTGRES_PASSWORD: iga_password
+  #     POSTGRES_DB: iga_db
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   networks:
+  #     - iga-network
+
+volumes:
+  backend_data:
+  # postgres_data:
+
+networks:
+  iga-network:
+    driver: bridge
