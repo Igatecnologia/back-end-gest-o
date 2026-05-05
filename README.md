@@ -142,3 +142,16 @@ src/
 | npm run dev | Servidor com hot-reload (tsx watch) |
 | npm run build | Compilar TypeScript |
 | npm start | Iniciar build compilado |
+
+
+# Login aws CLI
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 838303372242.dkr.ecr.us-east-1.amazonaws.com
+
+# 1. Build da imagem localmente
+docker build -f Dockerfile.prod -t class-tracker .
+
+# 2. Tag para o ECR
+docker tag class-tracker:latest 838303372242.dkr.ecr.us-east-1.amazonaws.com/class-tracker:latest
+
+# 3. Push para o ECR
+docker push 838303372242.dkr.ecr.us-east-1.amazonaws.com/class-tracker:latest
