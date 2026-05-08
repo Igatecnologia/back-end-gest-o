@@ -155,3 +155,12 @@ docker tag class-tracker:latest 838303372242.dkr.ecr.us-east-1.amazonaws.com/cla
 
 # 3. Push para o ECR
 docker push 838303372242.dkr.ecr.us-east-1.amazonaws.com/class-tracker:latest
+
+# ou
+
+# 4. Push to ECR
+chmod +x push-to-ecr.sh
+./push-to-ecr.sh
+
+
+
