@@ -158,7 +158,7 @@ docker push 838303372242.dkr.ecr.us-east-1.amazonaws.com/class-tracker:latest
 
 # ou
 
-# 4. Push to ECR
+# 4. Utilizar Push to ECR
 chmod +x push-to-ecr.sh
 ./push-to-ecr.sh
 
