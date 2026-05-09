@@ -7,11 +7,11 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  ECR_REPOSITORY: repo-backend-gestao-iga
-  ECS_CLUSTER: cluster-backend-gestao-iga
-  ECS_SERVICE: taskdef-backend-gestao-iga-service-td13htul
-  TASK_FAMILY: taskdef-backend-gestao-iga
-  CONTAINER_NAME: taskdef-detail-backend-gestao-iga 
+  ECR_REPOSITORY: repo-backend-gestao-iga-bi
+  ECS_CLUSTER: cluster-backend-gestao-iga-bi
+  ECS_SERVICE: taskdef-backend-gestao-iga-bi-service-td13htul
+  TASK_FAMILY: taskdef-backend-gestao-iga-bi
+  CONTAINER_NAME: taskdef-detail-backend-gestao-iga-bi 
 
 jobs:
   deploy:
